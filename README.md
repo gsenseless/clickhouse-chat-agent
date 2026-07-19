@@ -28,11 +28,14 @@ The agent decides when a visualization beats prose: it calls a `renderVisualizat
    # paste your project ref and secret key into .env
    ```
 
-3. In the dashboard, add two environment variables (Environment Variables page) for the Dev environment (and Prod if you deploy):
+3. In the dashboard, add these environment variables (Environment Variables page) for the Dev environment (and Prod if you deploy):
 
    - `CLICKHOUSE_URL` — your ClickHouse HTTPS endpoint with credentials embedded:
      `https://default:YOUR_PASSWORD@YOUR_SERVICE.clickhouse.cloud:8443`
-   - `ANTHROPIC_API_KEY` — the agent uses Claude via the AI SDK
+   - `NIM_API_KEY` — your NVIDIA NIM API key from NVIDIA Build
+   - `NIM_MODEL` — optional model name, defaulting to `meta/llama-3.3-70b-instruct`
+
+   The agent uses NIM through the AI SDK's OpenAI-compatible provider. It returns a normal streamed chat response with tool calls; it does not need to force the whole response to JSON. The `runQuery` tool returns ClickHouse rows as JSON, and `renderVisualization` accepts a structured JSON spec through tool-calling.
 
 4. Install and run both processes (two terminals):
 
@@ -60,4 +63,4 @@ If your database is empty, load one of the [ClickHouse example datasets](https:/
 pnpm deploy:trigger
 ```
 
-Make sure `CLICKHOUSE_URL` and `ANTHROPIC_API_KEY` are set for the Prod environment in the dashboard, and deploy the Next.js app anywhere with `TRIGGER_SECRET_KEY` (prod) set.
+Make sure `CLICKHOUSE_URL`, `NIM_API_KEY` and any desired `NIM_MODEL` override are set for the Prod environment in the dashboard, and deploy the Next.js app anywhere with `TRIGGER_SECRET_KEY` (prod) set.

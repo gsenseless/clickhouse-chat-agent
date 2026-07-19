@@ -1,10 +1,33 @@
 import { prompts } from "@trigger.dev/sdk";
 import { chat } from "@trigger.dev/sdk/ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { createProviderRegistry, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { catalogPromptSection, normalizeSpec, validateSpec } from "../lib/catalog";
+
+const DEFAULT_NIM_MODEL = "meta/llama-3.3-70b-instruct";
+
+function getNimModelName(): string {
+  return process.env.NIM_MODEL?.trim() || DEFAULT_NIM_MODEL;
+}
+
+function getNimProvider() {
+  const apiKey = process.env.NIM_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "NIM_API_KEY is not set. Add it in the Trigger.dev dashboard under Environment Variables."
+    );
+  }
+
+  return createOpenAICompatible({
+    name: "nim",
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
+}
 
 // ============================================================================
 // ClickHouse client (Node.js client, HTTPS interface)
@@ -176,8 +199,6 @@ const tools = { listTables, describeTable, runQuery, renderVisualization };
 // The chat agent
 // ============================================================================
 
-const registry = createProviderRegistry({ anthropic });
-
 // A versioned AI Prompt: edit or override the analyst guidance (and model/
 // temperature) from the dashboard without redeploying. The json-render
 // component reference is generated from the catalog at run time and injected
@@ -185,7 +206,7 @@ const registry = createProviderRegistry({ anthropic });
 const systemPrompt = prompts.define({
   id: "clickhouse-analyst",
   description: "System prompt for the ClickHouse data-analyst chat agent",
-  model: "anthropic:claude-opus-4-8",
+  model: `nim:${getNimModelName()}`,
   variables: z.object({
     componentReference: z.string(),
   }),
@@ -229,10 +250,13 @@ export const clickhouseAgent = chat.agent({
   },
 
   run: async ({ messages, tools, signal }) => {
+    const nim = getNimProvider();
+    const registry = createProviderRegistry({ nim });
+
     return streamText({
       // Fallback model only — placed BEFORE the spread so the stored
       // prompt's model (including dashboard overrides) wins when set.
-      model: anthropic("claude-opus-4-8"),
+      model: nim.chatModel(getNimModelName()),
       // Spread chat.toStreamTextOptions() — it wires up prepareStep
       // (compaction, steering, background injection), plus the system
       // prompt + model + config + telemetry from chat.prompt().
