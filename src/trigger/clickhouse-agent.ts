@@ -7,7 +7,8 @@ import { z } from "zod";
 import { catalogPromptSection, normalizeSpec, validateSpec } from "../lib/catalog";
 
 //const DEFAULT_NIM_MODEL = "moonshotai/kimi-k2.6";
-const DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct"
+//const DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct";
+const DEFAULT_NIM_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 // const DEFAULT_NIM_MODEL = "meta/llama-3.3-70b-instruct";
 
 function getNimModelName(): string {
