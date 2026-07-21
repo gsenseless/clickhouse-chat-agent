@@ -19,6 +19,20 @@ const SUGGESTIONS = [
   "Break down trips by payment type",
 ];
 
+const DEBUG_DEFAULT_VISIBLE = ["1", "true", "on"].includes(
+  (process.env.NEXT_PUBLIC_CHAT_DEBUG ?? "1").toLowerCase()
+);
+
+type ToolDebugPayload = {
+  tool?: string;
+  status?: "started" | "succeeded" | "failed";
+  durationMs?: number;
+  inputPreview?: string;
+  outputSummary?: string;
+  truncated?: boolean;
+  error?: string;
+};
+
 export function Chat() {
   const transport = useTriggerChatTransport<typeof clickhouseAgent>({
     task: "clickhouse-agent",
@@ -32,6 +46,7 @@ export function Chat() {
 
   const { messages, sendMessage, stop, status } = useChat({ transport });
   const [input, setInput] = useState("");
+  const [showDebug, setShowDebug] = useState(DEBUG_DEFAULT_VISIBLE);
   const busy = status === "submitted" || status === "streaming";
 
   function submit(text: string) {
@@ -46,7 +61,15 @@ export function Chat() {
       <header className="flex items-center gap-2 border-b px-4 py-3">
         <Database className="size-4 text-muted-foreground" />
         <h1 className="text-sm font-semibold">ClickHouse chat agent</h1>
-        <span className="ml-auto text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => setShowDebug((v) => !v)}
+          className="ml-auto rounded-full border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          aria-pressed={showDebug}
+        >
+          {showDebug ? "Hide debug" : "Show debug"}
+        </button>
+        <span className="text-xs text-muted-foreground">
           Charts &amp; tables, not walls of text
         </span>
       </header>
@@ -73,7 +96,7 @@ export function Chat() {
         )}
 
         {messages.map((message) => (
-          <Message key={message.id} message={message} />
+          <Message key={message.id} message={message} showDebug={showDebug} />
         ))}
 
         {status === "submitted" && (
@@ -122,7 +145,7 @@ export function Chat() {
   );
 }
 
-function Message({ message }: { message: UIMessage }) {
+function Message({ message, showDebug }: { message: UIMessage; showDebug: boolean }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -133,11 +156,14 @@ function Message({ message }: { message: UIMessage }) {
     );
   }
 
+  const toolTimeline = getToolTimeline(message);
+
   return (
     <div className="space-y-1 text-sm">
       {message.parts.map((part, i) => (
         <MessagePart key={i} part={part} />
       ))}
+      {showDebug && toolTimeline.length > 0 && <DebugTimeline entries={toolTimeline} />}
     </div>
   );
 }
@@ -212,5 +238,138 @@ function ToolStatus({ label, spinning }: { label: string; spinning?: boolean }) 
       {spinning ? <Loader2 className="size-3 animate-spin" /> : <Database className="size-3" />}
       {label}
     </div>
+  );
+}
+
+function getToolTimeline(message: UIMessage): Array<{
+  key: string;
+  toolName: string;
+  status: string;
+  durationMs?: number;
+  inputPreview: string;
+  outputSummary?: string;
+  error?: string;
+}> {
+  const timeline: Array<{
+    key: string;
+    toolName: string;
+    status: string;
+    durationMs?: number;
+    inputPreview: string;
+    outputSummary?: string;
+    error?: string;
+  }> = [];
+
+  message.parts.forEach((part, index) => {
+    if (!part.type.startsWith("tool-")) {
+      return;
+    }
+
+    const toolPart = part as {
+      type: `tool-${string}`;
+      state?: string;
+      input?: unknown;
+      output?: unknown;
+    };
+    const toolName = toolPart.type.replace("tool-", "");
+    const output = toolPart.output as { debug?: ToolDebugPayload; error?: string } | undefined;
+    const debug = output?.debug;
+
+    timeline.push({
+      key: `${part.type}-${index}`,
+      toolName,
+      status:
+        debug?.status ??
+        (toolPart.state === "output-available"
+          ? "succeeded"
+          : toolPart.state === "input-streaming"
+            ? "planning"
+            : "running"),
+      durationMs: debug?.durationMs,
+      inputPreview: debug?.inputPreview ?? summarizeToolInput(toolName, toolPart.input),
+      outputSummary: debug?.outputSummary,
+      error: debug?.error ?? output?.error,
+    });
+  });
+
+  return timeline;
+}
+
+function summarizeToolInput(toolName: string, input: unknown): string {
+  if (!input || typeof input !== "object") {
+    return "No input";
+  }
+
+  if (toolName === "runQuery") {
+    const query = (input as { query?: unknown }).query;
+    if (typeof query === "string") {
+      return truncateOneLine(query, 300);
+    }
+  }
+
+  if (toolName === "describeTable") {
+    const table = (input as { table?: unknown }).table;
+    if (typeof table === "string") {
+      return `table=${truncateOneLine(table, 120)}`;
+    }
+  }
+
+  if (toolName === "renderVisualization") {
+    const spec = (input as { spec?: unknown }).spec;
+    if (spec && typeof spec === "object") {
+      const root = (spec as { root?: unknown }).root;
+      const elements = (spec as { elements?: Record<string, unknown> }).elements;
+      const count = elements && typeof elements === "object" ? Object.keys(elements).length : 0;
+      return `root=${typeof root === "string" ? root : "?"}, elements=${count}`;
+    }
+  }
+
+  try {
+    return truncateOneLine(JSON.stringify(input), 240);
+  } catch {
+    return "[unserializable input]";
+  }
+}
+
+function truncateOneLine(value: string, maxChars: number): string {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length > maxChars ? `${oneLine.slice(0, maxChars)}…` : oneLine;
+}
+
+function DebugTimeline({
+  entries,
+}: {
+  entries: Array<{
+    key: string;
+    toolName: string;
+    status: string;
+    durationMs?: number;
+    inputPreview: string;
+    outputSummary?: string;
+    error?: string;
+  }>;
+}) {
+  return (
+    <details className="my-2 rounded-lg border border-dashed bg-muted/30 px-3 py-2">
+      <summary className="cursor-pointer list-none text-xs font-medium text-muted-foreground">
+        Under the hood ({entries.length} tool step{entries.length === 1 ? "" : "s"})
+      </summary>
+      <div className="mt-2 space-y-2">
+        {entries.map((entry, i) => (
+          <div key={entry.key} className="rounded-md bg-background/80 px-2 py-1.5 text-[11px] leading-5">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{i + 1}. {entry.toolName}</span>
+              <span className="text-muted-foreground">{entry.status}</span>
+              {typeof entry.durationMs === "number" && (
+                <span className="text-muted-foreground">{entry.durationMs} ms</span>
+              )}
+            </div>
+            <div className="text-muted-foreground">input: {entry.inputPreview}</div>
+            {entry.outputSummary && <div className="text-muted-foreground">output: {entry.outputSummary}</div>}
+            {entry.error && <div className="text-red-500">error: {entry.error}</div>}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }

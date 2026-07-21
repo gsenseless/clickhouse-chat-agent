@@ -6,7 +6,9 @@ import { createProviderRegistry, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { catalogPromptSection, normalizeSpec, validateSpec } from "../lib/catalog";
 
-const DEFAULT_NIM_MODEL = "meta/llama-3.3-70b-instruct";
+//const DEFAULT_NIM_MODEL = "moonshotai/kimi-k2.6";
+const DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct"
+// const DEFAULT_NIM_MODEL = "meta/llama-3.3-70b-instruct";
 
 function getNimModelName(): string {
   return process.env.NIM_MODEL?.trim() || DEFAULT_NIM_MODEL;
@@ -52,6 +54,56 @@ function getClickHouse(): ClickHouseClient {
 
 // Keep tool outputs a sane size for the model and the chat stream.
 const MAX_OUTPUT_CHARS = 50_000;
+const MAX_DEBUG_PREVIEW_CHARS = 300;
+const MAX_DEBUG_JSON_CHARS = 800;
+
+const DEBUG_ENABLED = !["0", "false", "off"].includes(
+  (process.env.CLICKHOUSE_AGENT_DEBUG ?? "1").trim().toLowerCase()
+);
+
+type DebugTrace = {
+  tool: string;
+  status: "started" | "succeeded" | "failed";
+  durationMs?: number;
+  inputPreview?: string;
+  outputSummary?: string;
+  truncated?: boolean;
+  error?: string;
+};
+
+function truncateText(text: string, maxChars = MAX_DEBUG_PREVIEW_CHARS): { text: string; truncated: boolean } {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return { text: normalized, truncated: false };
+  }
+  return { text: `${normalized.slice(0, maxChars)}…`, truncated: true };
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function summarizeJson(value: unknown, maxChars = MAX_DEBUG_JSON_CHARS): { summary: string; truncated: boolean } {
+  const raw = safeJsonStringify(value);
+  if (raw.length <= maxChars) {
+    return { summary: raw, truncated: false };
+  }
+  return { summary: `${raw.slice(0, maxChars)}…`, truncated: true };
+}
+
+function logDebug(label: string, payload: unknown) {
+  if (!DEBUG_ENABLED) return;
+  console.log(`[clickhouse-agent/${label}]`, payload);
+}
+
+function logDebugError(label: string, payload: unknown) {
+  if (!DEBUG_ENABLED) return;
+  console.error(`[clickhouse-agent/${label}]`, payload);
+}
 
 function capOutput(rows: unknown[]): { rows: unknown[]; truncated: boolean } {
   let out = rows;
@@ -70,16 +122,56 @@ const listTables = tool({
     "List the tables in the ClickHouse database, with their engine and row counts. Use this first to see what data is available.",
   inputSchema: z.object({}),
   execute: async () => {
-    const result = await getClickHouse().query({
-      query: `
-        SELECT database, name, engine, total_rows, formatReadableSize(total_bytes) AS size
-        FROM system.tables
-        WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
-        ORDER BY database, name
-      `,
-      format: "JSONEachRow",
-    });
-    return { tables: await result.json() };
+    const startedAt = Date.now();
+    logDebug("tool-start", { tool: "listTables", input: "{}" });
+
+    try {
+      const result = await getClickHouse().query({
+        query: `
+          SELECT database, name, engine, total_rows, formatReadableSize(total_bytes) AS size
+          FROM system.tables
+          WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+          ORDER BY database, name
+        `,
+        format: "JSONEachRow",
+      });
+      const tables = await result.json();
+      const durationMs = Date.now() - startedAt;
+      const outputPreview = summarizeJson({ rowCount: tables.length });
+      logDebug("tool-success", {
+        tool: "listTables",
+        durationMs,
+        outputSummary: outputPreview.summary,
+        outputSummaryTruncated: outputPreview.truncated,
+      });
+
+      return {
+        tables,
+        debug: {
+          tool: "listTables",
+          status: "succeeded",
+          durationMs,
+          outputSummary: `Returned ${tables.length} table rows`,
+        } satisfies DebugTrace,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logDebugError("tool-error", {
+        tool: "listTables",
+        durationMs,
+        error: errorMessage,
+      });
+      return {
+        error: errorMessage,
+        debug: {
+          tool: "listTables",
+          status: "failed",
+          durationMs,
+          error: errorMessage,
+        } satisfies DebugTrace,
+      };
+    }
   },
 });
 
@@ -92,18 +184,68 @@ const describeTable = tool({
       .describe("The table name, optionally qualified with a database, e.g. 'default.trips'"),
   }),
   execute: async ({ table }) => {
+    const startedAt = Date.now();
+    const tablePreview = truncateText(table);
+    logDebug("tool-start", {
+      tool: "describeTable",
+      input: { table: tablePreview.text, truncated: tablePreview.truncated },
+    });
+
     // Identifier params — the client binds them safely, no string interpolation.
     // A qualified name must bind as two identifiers; one param would escape
     // the whole string as a single (nonexistent) table name.
-    const [database, name] = table.includes(".") ? table.split(".", 2) : [undefined, table];
-    const result = await getClickHouse().query({
-      query: database
-        ? "DESCRIBE TABLE {database: Identifier}.{name: Identifier}"
-        : "DESCRIBE TABLE {name: Identifier}",
-      query_params: { database, name },
-      format: "JSONEachRow",
-    });
-    return { columns: await result.json() };
+    try {
+      const [database, name] = table.includes(".") ? table.split(".", 2) : [undefined, table];
+      const result = await getClickHouse().query({
+        query: database
+          ? "DESCRIBE TABLE {database: Identifier}.{name: Identifier}"
+          : "DESCRIBE TABLE {name: Identifier}",
+        query_params: { database, name },
+        format: "JSONEachRow",
+      });
+      const columns = await result.json();
+      const durationMs = Date.now() - startedAt;
+      logDebug("tool-success", {
+        tool: "describeTable",
+        durationMs,
+        table: tablePreview.text,
+        tableTruncated: tablePreview.truncated,
+        columnCount: columns.length,
+      });
+
+      return {
+        columns,
+        debug: {
+          tool: "describeTable",
+          status: "succeeded",
+          durationMs,
+          inputPreview: tablePreview.text,
+          outputSummary: `Returned ${columns.length} columns`,
+          truncated: tablePreview.truncated,
+        } satisfies DebugTrace,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logDebugError("tool-error", {
+        tool: "describeTable",
+        durationMs,
+        table: tablePreview.text,
+        tableTruncated: tablePreview.truncated,
+        error: errorMessage,
+      });
+      return {
+        error: errorMessage,
+        debug: {
+          tool: "describeTable",
+          status: "failed",
+          durationMs,
+          inputPreview: tablePreview.text,
+          truncated: tablePreview.truncated,
+          error: errorMessage,
+        } satisfies DebugTrace,
+      };
+    }
   },
 });
 
@@ -118,10 +260,33 @@ const runQuery = tool({
     query: z.string().describe("The ClickHouse SQL query to run"),
   }),
   execute: async ({ query }) => {
+    const startedAt = Date.now();
+    const queryPreview = truncateText(query);
+    logDebug("tool-start", {
+      tool: "runQuery",
+      input: { queryPreview: queryPreview.text, truncated: queryPreview.truncated },
+    });
+
     if (!READ_ONLY_STATEMENTS.test(query)) {
+      const durationMs = Date.now() - startedAt;
+      logDebug("tool-success", {
+        tool: "runQuery",
+        durationMs,
+        readonlyRejected: true,
+        queryPreview: queryPreview.text,
+      });
       return {
         error:
           "Only read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
+        debug: {
+          tool: "runQuery",
+          status: "failed",
+          durationMs,
+          inputPreview: queryPreview.text,
+          truncated: queryPreview.truncated,
+          error:
+            "Only read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
+        } satisfies DebugTrace,
       };
     }
 
@@ -141,14 +306,54 @@ const runQuery = tool({
 
       const rows = await result.json();
       const capped = capOutput(rows);
+      const durationMs = Date.now() - startedAt;
+      const outputSummary = `Returned ${rows.length} rows${capped.truncated ? " (truncated)" : ""}`;
+      logDebug("tool-success", {
+        tool: "runQuery",
+        durationMs,
+        queryPreview: queryPreview.text,
+        queryTruncated: queryPreview.truncated,
+        rowCount: rows.length,
+        truncated: capped.truncated,
+      });
+
       return {
         rowCount: rows.length,
         rows: capped.rows,
         ...(capped.truncated ? { note: "Result truncated — refine the query or aggregate." } : {}),
+        debug: {
+          tool: "runQuery",
+          status: "succeeded",
+          durationMs,
+          inputPreview: queryPreview.text,
+          outputSummary,
+          truncated: queryPreview.truncated || capped.truncated,
+        } satisfies DebugTrace,
       };
     } catch (error) {
       // Return ClickHouse errors to the model so it can fix the query and retry.
-      return { error: error instanceof Error ? error.message : String(error) };
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorPreview = truncateText(errorMessage, 500);
+      logDebugError("tool-error", {
+        tool: "runQuery",
+        durationMs,
+        queryPreview: queryPreview.text,
+        queryTruncated: queryPreview.truncated,
+        error: errorPreview.text,
+        errorTruncated: errorPreview.truncated,
+      });
+      return {
+        error: errorMessage,
+        debug: {
+          tool: "runQuery",
+          status: "failed",
+          durationMs,
+          inputPreview: queryPreview.text,
+          truncated: queryPreview.truncated || errorPreview.truncated,
+          error: errorPreview.text,
+        } satisfies DebugTrace,
+      };
     }
   },
 });
@@ -176,19 +381,86 @@ const renderVisualization = tool({
     }),
   }),
   execute: async ({ spec }) => {
+    const startedAt = Date.now();
+    const inputSummary = summarizeJson(
+      {
+        root: spec.root,
+        elementCount: Object.keys(spec.elements ?? {}).length,
+      },
+      300
+    );
+    logDebug("tool-start", {
+      tool: "renderVisualization",
+      inputSummary: inputSummary.summary,
+      inputSummaryTruncated: inputSummary.truncated,
+    });
+
     const normalized = normalizeSpec(spec);
     if (!normalized) {
-      return { ok: false, errors: ['spec must be an object of the form { root: "<key>", elements: { ... } }'] };
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = 'spec must be an object of the form { root: "<key>", elements: { ... } }';
+      logDebug("tool-success", {
+        tool: "renderVisualization",
+        durationMs,
+        validationFailed: true,
+      });
+      return {
+        ok: false,
+        errors: [errorMessage],
+        debug: {
+          tool: "renderVisualization",
+          status: "failed",
+          durationMs,
+          inputPreview: inputSummary.summary,
+          truncated: inputSummary.truncated,
+          error: errorMessage,
+        } satisfies DebugTrace,
+      };
     }
     const result = validateSpec(normalized);
     if (!result.ok) {
       // Surfaces in the run log — handy when tuning the catalog or prompt.
       console.warn("renderVisualization spec rejected:", result.errors);
-      return { ok: false, errors: result.errors };
+      const durationMs = Date.now() - startedAt;
+      const summarizedErrors = truncateText(result.errors.join("; "), 500);
+      logDebug("tool-success", {
+        tool: "renderVisualization",
+        durationMs,
+        validationFailed: true,
+        errors: summarizedErrors.text,
+        errorsTruncated: summarizedErrors.truncated,
+      });
+      return {
+        ok: false,
+        errors: result.errors,
+        debug: {
+          tool: "renderVisualization",
+          status: "failed",
+          durationMs,
+          inputPreview: inputSummary.summary,
+          truncated: inputSummary.truncated || summarizedErrors.truncated,
+          error: summarizedErrors.text,
+        } satisfies DebugTrace,
+      };
     }
+    const durationMs = Date.now() - startedAt;
+    logDebug("tool-success", {
+      tool: "renderVisualization",
+      durationMs,
+      root: normalized.root,
+      elementCount: Object.keys(normalized.elements).length,
+    });
     return {
       ok: true,
       note: "Rendered to the user. Don't repeat the data as text — add at most a one-sentence takeaway.",
+      debug: {
+        tool: "renderVisualization",
+        status: "succeeded",
+        durationMs,
+        inputPreview: inputSummary.summary,
+        outputSummary: `Rendered ${Object.keys(normalized.elements).length} elements`,
+        truncated: inputSummary.truncated,
+      } satisfies DebugTrace,
     };
   },
 });
@@ -252,12 +524,13 @@ export const clickhouseAgent = chat.agent({
   run: async ({ messages, tools, signal }) => {
     const nim = getNimProvider();
     const registry = createProviderRegistry({ nim });
+    const runStartedAt = Date.now();
 
     // Lightweight debug logging to help correlate client requests with runs.
     try {
       const firstUser = messages.find((m: any) => m.role === "user");
       const promptSnippet = firstUser ? (firstUser.content?.slice?.(0, 200) ?? JSON.stringify(firstUser)) : "";
-      console.log("[clickhouse-agent] starting streamText", {
+      logDebug("run-start", {
         messages: messages.length,
         promptSnippet,
         tools: Object.keys(tools || {}).join(","),
@@ -281,6 +554,15 @@ export const clickhouseAgent = chat.agent({
       tools,
       stopWhen: stepCountIs(15),
       abortSignal: signal,
+      onFinish: ({ finishReason, usage, totalUsage }) => {
+        logDebug("run-finish", {
+          durationMs: Date.now() - runStartedAt,
+          finishReason,
+          usage,
+          totalUsage,
+          aborted: !!(signal && (signal as AbortSignal).aborted),
+        });
+      },
     });
   },
 });
