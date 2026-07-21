@@ -253,6 +253,20 @@ export const clickhouseAgent = chat.agent({
     const nim = getNimProvider();
     const registry = createProviderRegistry({ nim });
 
+    // Lightweight debug logging to help correlate client requests with runs.
+    try {
+      const firstUser = messages.find((m: any) => m.role === "user");
+      const promptSnippet = firstUser ? (firstUser.content?.slice?.(0, 200) ?? JSON.stringify(firstUser)) : "";
+      console.log("[clickhouse-agent] starting streamText", {
+        messages: messages.length,
+        promptSnippet,
+        tools: Object.keys(tools || {}).join(","),
+        aborted: !!(signal && (signal as AbortSignal).aborted),
+      });
+    } catch (err) {
+      console.warn("[clickhouse-agent] debug log failed", err);
+    }
+
     return streamText({
       // Fallback model only — placed BEFORE the spread so the stored
       // prompt's model (including dashboard overrides) wins when set.
