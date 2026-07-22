@@ -138,8 +138,11 @@ export function catalogPromptSection(): string {
     })
     .join("\n\n");
 
-  return `The spec is a flat element map:
+  return `The spec is a flat element map and must be passed as an object payload (never as a JSON string):
 { "root": "<key of root element>", "elements": { "<key>": { "type": "<ComponentName>", "props": { ... }, "children": ["<child key>", ...] } } }
+
+- Pass this structure directly in tool arguments as spec: { ... }.
+- Never wrap the spec with JSON.stringify.
 
 - Every key referenced in "children" or "root" must exist in "elements".
 - Only Card, Stack, and Grid take children; other components are leaves (omit "children" or pass []).

@@ -3,10 +3,10 @@ export function polymarketDataContext(): string {
 
 Scope of loaded data:
 - polymarket.markets: full snapshot (all loaded rows, no time filter)
-- polymarket.trades: April 2026 only (2026-04-01 00:00:00 UTC to 2026-05-01 00:00:00 UTC)
+- polymarket.trades: April 2026 only 
 - Missing by design: raw on-chain fee fields, users rollups, quant-style pre-normalized YES view, and full multi-month trade history
 
-If a user asks for out-of-scope data, state that explicitly and offer to load additional data instead of inferring from missing data.
+If a user asks for out-of-scope data, state that explicitly.
 
 Join and grain:
 - markets grain: one row per market; primary key is markets.id
@@ -24,8 +24,6 @@ Gotchas:
 5. No per-user rollup table is loaded. Approximate from maker/taker + maker_direction/taker_direction.
 
 Query patterns:
-- Coverage sanity check:
-  SELECT min(trade_time) AS earliest, max(trade_time) AS latest, count() AS n_rows FROM polymarket.trades
 - April volume by market:
   SELECT market_id, sum(usd_amount) AS april_volume_usd FROM polymarket.trades GROUP BY market_id ORDER BY april_volume_usd DESC LIMIT 20
 - Daily normalized YES trend for one market:

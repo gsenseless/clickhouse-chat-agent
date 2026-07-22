@@ -495,36 +495,77 @@ const runQuery = tool({
 const renderVisualization = tool({
   description:
     "Render charts, tables and stat cards for the user, instead of describing data as text. " +
-    "Pass a json-render spec built from the components listed in the system prompt, with the " +
-    "data rows inlined. Use whenever an answer contains tabular data, a trend, a comparison " +
-    "or a headline number.",
+    "Pass a structured json-render spec object (not a JSON string) built from the components listed " +
+    "in the system prompt, with the data rows inlined. Use whenever an answer contains tabular data, " +
+    "a trend, a comparison or a headline number.",
   inputSchema: z.object({
-    spec: z.object({
-      root: z.string().describe("Key of the root element"),
-      elements: z.record(
-        z.string(),
+    spec: z
+      .union([
         z.object({
-          type: z.string().describe("A component name from the system prompt"),
-          props: z.record(z.string(), z.unknown()),
-          children: z.array(z.string()).optional().describe("Keys of child elements"),
-        })
+          root: z.string().describe("Key of the root element"),
+          elements: z.record(
+            z.string(),
+            z.object({
+              type: z.string().describe("A component name from the system prompt"),
+              props: z.record(z.string(), z.unknown()),
+              children: z.array(z.string()).optional().describe("Keys of child elements"),
+            })
+          ),
+        }),
+        z.string(),
+      ])
+      .describe(
+        "Visualization spec payload. Pass a structured object with { root, elements }. Do not pass a JSON string."
       ),
-    }),
   }),
   execute: async ({ spec }) => {
     const startedAt = Date.now();
-    const inputSummary = summarizeJson(
-      {
-        root: spec.root,
-        elementCount: Object.keys(spec.elements ?? {}).length,
-      },
-      300
-    );
+    const inputSummary =
+      typeof spec === "string"
+        ? summarizeJson(
+            {
+              specType: "string",
+              specPreview: truncateText(spec, 300).text,
+            },
+            300
+          )
+        : summarizeJson(
+            {
+              specType: "object",
+              root: spec.root,
+              elementCount: Object.keys(spec.elements ?? {}).length,
+            },
+            300
+          );
     logDebug("tool-start", {
       tool: "renderVisualization",
       inputSummary: inputSummary.summary,
       inputSummaryTruncated: inputSummary.truncated,
     });
+
+    if (typeof spec === "string") {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage =
+        "renderVisualization requires spec as an object, not a string. Pass spec directly as { root, elements } and do not JSON.stringify it.";
+      logDebug("tool-success", {
+        tool: "renderVisualization",
+        durationMs,
+        validationFailed: true,
+        rejectedSpecType: "string",
+      });
+      return {
+        ok: false,
+        errors: [errorMessage],
+        debug: {
+          tool: "renderVisualization",
+          status: "failed",
+          durationMs,
+          inputPreview: inputSummary.summary,
+          truncated: inputSummary.truncated,
+          error: errorMessage,
+        } satisfies DebugTrace,
+      };
+    }
 
     const normalized = normalizeSpec(spec);
     if (!normalized) {
@@ -792,6 +833,7 @@ Guidelines:
 Presenting results:
 - Whenever the answer contains tabular data, a trend, a comparison or a headline number, use this sequence: runQuery -> filterColumnsForVisualization -> renderVisualization.
 - In filterColumnsForVisualization, filter only columns (never rows). Decide relevance only from the user prompt and column names/descriptions; never from row values.
+- When calling renderVisualization, pass spec as a structured object in tool arguments (never as a JSON string).
 - For ranking asks, drop irrelevant columns (for example Maker, Taker, IDs, or Trade Time) unless explicitly requested by the user.
 - Then call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
 - Compose visualizations inside a Card with a title; put multiple related views in one spec (e.g. a Stat row above a chart).
