@@ -23,6 +23,12 @@ Gotchas:
 4. No raw fee columns (maker_fee, protocol_fee, raw wei amounts) are loaded.
 5. No per-user rollup table is loaded. Approximate from maker/taker + maker_direction/taker_direction.
 
+Text search (polymarket.markets):
+- Text indexes exist on lower(question) and lower(event_title).
+- For keyword search in ClickHouse on these columns, use hasToken / hasAnyTokens / hasAllTokens.
+- Do not use match()/regexp for keyword search, and prefer token search over LIKE.
+- Always wrap indexed columns in lower(...) so the text index can be used.
+
 Query patterns:
 - April volume by market:
   SELECT market_id, sum(usd_amount) AS april_volume_usd FROM polymarket.trades GROUP BY market_id ORDER BY april_volume_usd DESC LIMIT 20
@@ -31,5 +37,17 @@ Query patterns:
   FROM polymarket.trades
   WHERE market_id = '{market_id}'
   GROUP BY day
-  ORDER BY day`;
+  ORDER BY day
+- Single keyword in question:
+  SELECT id, question FROM polymarket.markets
+  WHERE hasToken(lower(question), 'bitcoin')
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0
+- Any of several keywords in event_title (OR):
+  SELECT id, event_title FROM polymarket.markets
+  WHERE hasAnyTokens(lower(event_title), 'bitcoin ethereum solana')
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0
+- All keywords required in question (AND):
+  SELECT id, question FROM polymarket.markets
+  WHERE hasAllTokens(lower(question), ['election', '2028'])
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0`;
 }

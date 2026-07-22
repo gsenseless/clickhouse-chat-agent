@@ -822,9 +822,26 @@ Guidelines:
 - Never query or describe any other table. If the user asks for other tables, explain that only polymarket.markets and polymarket.trades are in scope.
 - Use describeTable when schema details are needed before writing SQL.
 - Write ClickHouse SQL (not Postgres/MySQL dialect). Prefer aggregations over fetching raw rows.
+- For keyword search on polymarket.markets text columns, use ClickHouse text-index token functions: hasToken, hasAnyTokens, hasAllTokens.
+- For keyword search on question/event_title, do not use match() or regexp and prefer token functions over LIKE.
+- Always wrap indexed text columns with lower(...) in token search predicates so the text index is used: lower(question), lower(event_title).
 - Always LIMIT raw-row queries to 100 rows or fewer.
 - If a query fails, read the error, fix the SQL, and retry.
-- If a question needs data outside the loaded scope (months beyond April 2026, say this clearly and do not fabricate an answer.
+- If a question needs data outside the loaded scope (months beyond April 2026), say this clearly and do not fabricate an answer.
+
+Text-search examples (polymarket.markets):
+- Single keyword:
+  SELECT id, question FROM polymarket.markets
+  WHERE hasToken(lower(question), 'bitcoin')
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0
+- Any of several keywords (OR):
+  SELECT id, question FROM polymarket.markets
+  WHERE hasAnyTokens(lower(question), 'bitcoin ethereum solana')
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0
+- All keywords required (AND):
+  SELECT id, question FROM polymarket.markets
+  WHERE hasAllTokens(lower(question), ['election', '2028'])
+  SETTINGS max_execution_time = 30, timeout_before_checking_execution_speed = 0
 
 ## Polymarket data reference
 
