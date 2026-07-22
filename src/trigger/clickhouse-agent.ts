@@ -73,6 +73,13 @@ type DebugTrace = {
   error?: string;
 };
 
+type ColumnMeta = {
+  name: string;
+  description?: string;
+};
+
+type RowRecord = Record<string, unknown>;
+
 function truncateText(text: string, maxChars = MAX_DEBUG_PREVIEW_CHARS): { text: string; truncated: boolean } {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) {
@@ -113,6 +120,63 @@ function capOutput(rows: unknown[]): { rows: unknown[]; truncated: boolean } {
     out = out.slice(0, Math.ceil(out.length / 2));
   }
   return { rows: out, truncated: out.length < rows.length };
+}
+
+function tokenizeForRelevance(input: string): string[] {
+  return input
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
+
+function normalizeColumnName(input: string): string {
+  return input.trim().toLowerCase();
+}
+
+const COLUMN_FILTER_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "show",
+  "list",
+  "table",
+  "chart",
+  "data",
+  "rows",
+  "column",
+  "columns",
+  "result",
+  "results",
+]);
+
+function buildPromptTokenSet(prompt: string): Set<string> {
+  const tokens = tokenizeForRelevance(prompt).filter((token) => !COLUMN_FILTER_STOP_WORDS.has(token));
+  return new Set(tokens);
+}
+
+function scoreColumnRelevance(columnName: string, description: string | undefined, promptTokens: Set<string>): number {
+  const nameTokens = tokenizeForRelevance(columnName);
+  const descriptionTokens = tokenizeForRelevance(description ?? "");
+  const metadataTokens = new Set([...nameTokens, ...descriptionTokens]);
+
+  let score = 0;
+  for (const token of promptTokens) {
+    if (metadataTokens.has(token)) {
+      score += 2;
+    }
+  }
+
+  const normalizedName = normalizeColumnName(columnName);
+  if (promptTokens.has(normalizedName)) {
+    score += 3;
+  }
+
+  return score;
 }
 
 const POLYMARKET_DATABASE = "polymarket";
@@ -532,7 +596,165 @@ const renderVisualization = tool({
   },
 });
 
-const tools = { describeTable, runQuery, renderVisualization };
+// Column-only filtering tool used before visualization. Relevance is based
+// only on prompt text + column metadata and never on row values.
+const filterColumnsForVisualization = tool({
+  description:
+    "Filter visualization input by dropping irrelevant columns while preserving all rows. " +
+    "Relevance must be computed from user prompt + column names/descriptions only; never use row values.",
+  inputSchema: z.object({
+    rows: z.array(z.record(z.string(), z.unknown())).describe("Query result rows to project to relevant columns"),
+    userPrompt: z.string().describe("Original user request that determines which columns are relevant"),
+    columnsMeta: z
+      .array(
+        z.object({
+          name: z.string().describe("Column name"),
+          description: z.string().optional().describe("Optional column description or comment"),
+        })
+      )
+      .optional()
+      .describe("Optional column metadata. Use describeTable output when available."),
+    includeColumns: z
+      .array(z.string())
+      .optional()
+      .describe("Optional explicit allow-list of columns to keep"),
+    excludeColumns: z
+      .array(z.string())
+      .optional()
+      .describe("Optional explicit deny-list of columns to remove"),
+  }),
+  execute: async ({ rows, userPrompt, columnsMeta, includeColumns, excludeColumns }) => {
+    const startedAt = Date.now();
+    const inputSummary = summarizeJson(
+      {
+        rowCount: rows.length,
+        userPrompt,
+        columnsMetaCount: columnsMeta?.length ?? 0,
+        includeColumnsCount: includeColumns?.length ?? 0,
+        excludeColumnsCount: excludeColumns?.length ?? 0,
+      },
+      400
+    );
+    logDebug("tool-start", {
+      tool: "filterColumnsForVisualization",
+      inputSummary: inputSummary.summary,
+      inputSummaryTruncated: inputSummary.truncated,
+    });
+
+    try {
+      const detectedColumns = new Set<string>();
+      for (const row of rows) {
+        for (const key of Object.keys(row)) {
+          detectedColumns.add(key);
+        }
+      }
+
+      const allColumns = [...detectedColumns];
+      const promptTokens = buildPromptTokenSet(userPrompt);
+      const includeSet = new Set((includeColumns ?? []).map(normalizeColumnName));
+      const excludeSet = new Set((excludeColumns ?? []).map(normalizeColumnName));
+      const metaByColumn = new Map<string, ColumnMeta>();
+
+      for (const meta of columnsMeta ?? []) {
+        metaByColumn.set(normalizeColumnName(meta.name), meta);
+      }
+
+      let keptColumns: string[];
+
+      if (includeSet.size > 0) {
+        keptColumns = allColumns.filter((column) => includeSet.has(normalizeColumnName(column)));
+      } else {
+        keptColumns = allColumns.filter((column) => {
+          const normalized = normalizeColumnName(column);
+          if (excludeSet.has(normalized)) {
+            return false;
+          }
+
+          const meta = metaByColumn.get(normalized);
+          return scoreColumnRelevance(column, meta?.description, promptTokens) > 0;
+        });
+
+        // Safe fallback to avoid empty projections in ambiguous prompts.
+        if (keptColumns.length === 0) {
+          keptColumns = [...allColumns];
+        }
+      }
+
+      keptColumns = keptColumns.filter((column) => !excludeSet.has(normalizeColumnName(column)));
+      if (keptColumns.length === 0) {
+        keptColumns = [...allColumns];
+      }
+
+      const keptNormalized = new Set(keptColumns.map(normalizeColumnName));
+      const filteredRows: RowRecord[] = rows.map((row) => {
+        const projected: RowRecord = {};
+        for (const key of Object.keys(row)) {
+          if (keptNormalized.has(normalizeColumnName(key))) {
+            projected[key] = row[key];
+          }
+        }
+        return projected;
+      });
+
+      const removedColumns = allColumns.filter((column) => !keptNormalized.has(normalizeColumnName(column)));
+      const durationMs = Date.now() - startedAt;
+      logDebug("tool-success", {
+        tool: "filterColumnsForVisualization",
+        durationMs,
+        rowCountBefore: rows.length,
+        rowCountAfter: filteredRows.length,
+        totalColumns: allColumns.length,
+        keptColumns: keptColumns.length,
+        removedColumns: removedColumns.length,
+        usedDescriptions: (columnsMeta?.length ?? 0) > 0,
+      });
+
+      return {
+        rowCountBefore: rows.length,
+        rowCountAfter: filteredRows.length,
+        rows: filteredRows,
+        keptColumns,
+        removedColumns,
+        note:
+          (columnsMeta?.length ?? 0) > 0
+            ? "Columns filtered using prompt relevance + column names/descriptions; rows preserved."
+            : "Columns filtered using prompt relevance + column names only (no descriptions provided); rows preserved.",
+        debug: {
+          tool: "filterColumnsForVisualization",
+          status: "succeeded",
+          durationMs,
+          inputPreview: inputSummary.summary,
+          outputSummary: `Projected ${allColumns.length} columns to ${keptColumns.length}; rows unchanged (${rows.length})`,
+          truncated: inputSummary.truncated,
+        } satisfies DebugTrace,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorPreview = truncateText(errorMessage, 500);
+      logDebugError("tool-error", {
+        tool: "filterColumnsForVisualization",
+        durationMs,
+        error: errorPreview.text,
+        errorTruncated: errorPreview.truncated,
+      });
+
+      return {
+        error: errorMessage,
+        debug: {
+          tool: "filterColumnsForVisualization",
+          status: "failed",
+          durationMs,
+          inputPreview: inputSummary.summary,
+          truncated: inputSummary.truncated || errorPreview.truncated,
+          error: errorPreview.text,
+        } satisfies DebugTrace,
+      };
+    }
+  },
+});
+
+const tools = { describeTable, runQuery, filterColumnsForVisualization, renderVisualization };
 
 // ============================================================================
 // The chat agent
@@ -568,7 +790,10 @@ Guidelines:
 {{dataReference}}
 
 Presenting results:
-- Whenever the answer contains tabular data, a trend, a comparison or a headline number, call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
+- Whenever the answer contains tabular data, a trend, a comparison or a headline number, use this sequence: runQuery -> filterColumnsForVisualization -> renderVisualization.
+- In filterColumnsForVisualization, filter only columns (never rows). Decide relevance only from the user prompt and column names/descriptions; never from row values.
+- For ranking asks, drop irrelevant columns (for example Maker, Taker, IDs, or Trade Time) unless explicitly requested by the user.
+- Then call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
 - Compose visualizations inside a Card with a title; put multiple related views in one spec (e.g. a Stat row above a chart).
 - Keep chart data to a reasonable number of points (aggregate in SQL first) and pre-format display values (round numbers, currency symbols) in the props.
 - After rendering, add at most a one-or-two-sentence takeaway in text. Never repeat the rendered data as a markdown table.
