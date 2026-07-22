@@ -783,7 +783,7 @@ Guidelines:
 - Write ClickHouse SQL (not Postgres/MySQL dialect). Prefer aggregations over fetching raw rows.
 - Always LIMIT raw-row queries to 100 rows or fewer.
 - If a query fails, read the error, fix the SQL, and retry.
-- If a question needs data outside the loaded scope (months beyond April 2026, raw on-chain fee fields, per-user rollups, or precomputed YES-normalized views), say this clearly and do not fabricate an answer.
+- If a question needs data outside the loaded scope (months beyond April 2026, say this clearly and do not fabricate an answer.
 
 ## Polymarket data reference
 
@@ -796,7 +796,7 @@ Presenting results:
 - Then call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
 - Compose visualizations inside a Card with a title; put multiple related views in one spec (e.g. a Stat row above a chart).
 - Keep chart data to a reasonable number of points (aggregate in SQL first) and pre-format display values (round numbers, currency symbols) in the props.
-- After rendering, add at most a one-or-two-sentence takeaway in text. Never repeat the rendered data as a markdown table.
+- After rendering, add at most a one-or-two-sentence takeaway in text without exact values. Never repeat data.
 
 ## renderVisualization spec reference
 
