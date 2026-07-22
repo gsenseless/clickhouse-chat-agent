@@ -31,7 +31,7 @@ Text search (polymarket.markets):
 
 Query patterns:
 - April volume by market:
-  SELECT market_id, sum(usd_amount) AS april_volume_usd FROM polymarket.trades GROUP BY market_id ORDER BY april_volume_usd DESC LIMIT 20
+  SELECT market_id, sum(usd_amount) AS april_volume_usd FROM polymarket.trades GROUP BY market_id ORDER BY april_volume_usd DESC
 - Daily normalized YES trend for one market:
   SELECT toDate(trade_time) AS day, avg(multiIf(nonusdc_side = 'token1', price, 1 - price)) AS avg_yes_price
   FROM polymarket.trades
