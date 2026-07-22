@@ -405,72 +405,6 @@ const runQuery = tool({
   },
 });
 
-const checkTradesCoverage = tool({
-  description:
-    "Return the loaded trade-time coverage and row count for polymarket.trades. Use this when a result might be empty due to date-range limits.",
-  inputSchema: z.object({}),
-  execute: async () => {
-    const startedAt = Date.now();
-    logDebug("tool-start", { tool: "checkTradesCoverage", input: "{}" });
-
-    try {
-      const result = await getClickHouse().query({
-        query: `
-          SELECT
-            min(trade_time) AS earliest,
-            max(trade_time) AS latest,
-            count() AS row_count
-          FROM polymarket.trades
-        `,
-        format: "JSONEachRow",
-        clickhouse_settings: {
-          readonly: "2",
-          max_execution_time: 15,
-        },
-      });
-      const rows = (await result.json()) as Array<{
-        earliest: string | null;
-        latest: string | null;
-        row_count: number;
-      }>;
-      const coverage = rows[0] ?? { earliest: null, latest: null, row_count: 0 };
-      const durationMs = Date.now() - startedAt;
-      logDebug("tool-success", {
-        tool: "checkTradesCoverage",
-        durationMs,
-        coverage,
-      });
-
-      return {
-        coverage,
-        debug: {
-          tool: "checkTradesCoverage",
-          status: "succeeded",
-          durationMs,
-          outputSummary: `earliest=${coverage.earliest ?? "null"}, latest=${coverage.latest ?? "null"}, rows=${coverage.row_count}`,
-        } satisfies DebugTrace,
-      };
-    } catch (error) {
-      const durationMs = Date.now() - startedAt;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logDebugError("tool-error", {
-        tool: "checkTradesCoverage",
-        durationMs,
-        error: errorMessage,
-      });
-      return {
-        error: errorMessage,
-        debug: {
-          tool: "checkTradesCoverage",
-          status: "failed",
-          durationMs,
-          error: errorMessage,
-        } satisfies DebugTrace,
-      };
-    }
-  },
-});
-
 // The UI spec the model passes here is rendered in the Next.js app with
 // json-render + shadcn components. Validation errors are returned to the
 // model so it can fix the spec and retry.
@@ -578,7 +512,7 @@ const renderVisualization = tool({
   },
 });
 
-const tools = { describeTable, runQuery, checkTradesCoverage, renderVisualization };
+const tools = { describeTable, runQuery, renderVisualization };
 
 // ============================================================================
 // The chat agent
@@ -604,7 +538,6 @@ You can only use these two tables:
 Guidelines:
 - Never query or describe any other table. If the user asks for other tables, explain that only polymarket.markets and polymarket.trades are in scope.
 - Use describeTable when schema details are needed before writing SQL.
-- Use checkTradesCoverage when results are unexpectedly empty or when date-range coverage is unclear.
 - Write ClickHouse SQL (not Postgres/MySQL dialect). Prefer aggregations over fetching raw rows.
 - Always LIMIT raw-row queries to 100 rows or fewer.
 - If a query fails, read the error, fix the SQL, and retry.
