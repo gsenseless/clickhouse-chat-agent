@@ -1,66 +1,85 @@
-# ClickHouse chat agent — charts, not walls of text
+# ClickHouse chat agent for Polymarket — charts, not walls of text
 
-A [Trigger.dev chat agent](https://trigger.dev/docs/ai-chat/overview) that answers questions about your data by writing and running SQL against [ClickHouse Cloud](https://clickhouse.com/cloud) — and presents the results as **interactive charts, tables and stat cards** instead of paragraphs of text.
+A [Trigger.dev chat agent](https://trigger.dev/docs/ai-chat/overview) that answers Polymarket questions by writing and running SQL against [ClickHouse Cloud](https://clickhouse.com/cloud), then returning **interactive charts, tables, and stat cards** instead of long text dumps.
 
-The agent decides when a visualization beats prose: it calls a `renderVisualization` tool with a [json-render](https://json-render.dev) spec, and the Next.js chat UI renders it live with [shadcn/ui](https://ui.shadcn.com) components and [shadcn charts](https://ui.shadcn.com/charts) (Recharts).
+The agent decides when visualization beats prose by calling `renderVisualization` with a [json-render](https://json-render.dev) spec. The Next.js UI renders that spec live with [shadcn/ui](https://ui.shadcn.com) and [shadcn charts](https://ui.shadcn.com/charts) (Recharts).
 
 ## How it works
 
-**The agent** (`src/trigger/clickhouse-agent.ts`) is a single `chat.agent()` call — Trigger.dev handles the chat session, turn loop, streaming and resumability. Its system prompt is a versioned [AI Prompt](https://trigger.dev/docs/ai/prompts) (`prompts.define()` + `chat.prompt.set()`), so you can edit the analyst guidance, model or temperature from the dashboard without redeploying — and every model call is traced in the run with token, cost and latency metrics linked to the prompt version. It has four tools:
+The agent in `src/trigger/clickhouse-agent.ts` is a single `chat.agent()` task. Trigger.dev handles sessions, turn orchestration, streaming, and resumability.
 
-- **`listTables`** — lists tables with engine, row counts and size (from `system.tables`)
-- **`describeTable`** — returns column names and types, using a bound `Identifier` query param (no SQL string interpolation)
-- **`runQuery`** — runs read-only SQL: SELECT-style statements only, enforced in code plus `readonly=2`, a 1,000-row cap and a 30s timeout. Query errors are returned to the model so it can fix its SQL and retry.
-- **`renderVisualization`** — takes a json-render UI spec (charts, tables, stat cards, composed in cards and grids) with the query results inlined. The spec is validated against the component catalog; validation errors go back to the model so it can correct the spec and retry.
+Its system prompt is a versioned [AI Prompt](https://trigger.dev/docs/ai/prompts) (`prompts.define()` + `chat.prompt.set()`), so you can tune guidance/model settings in the Trigger.dev dashboard without redeploying.
 
-**The shared catalog** (`src/lib/catalog.ts`) defines which components the model may use — `Table`, `Card`, `Grid`, `Badge`, etc. from [`@json-render/shadcn`](https://www.npmjs.com/package/@json-render/shadcn), plus custom `BarChart`, `LineChart`, `AreaChart`, `PieChart` and `Stat` components, and a `PointMap` built on [mapcn](https://mapcn.dev) (MapLibre GL with free CARTO basemap tiles — no API key) for geographic answers. The same catalog generates the system-prompt component reference and validates tool calls, so the prompt and the renderer can't drift apart.
+It exposes four tools:
 
-**The frontend** (`src/app`, `src/components`) is a Next.js app using [`useChat`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) with [`useTriggerChatTransport`](https://trigger.dev/docs/ai-chat/frontend) — the browser talks directly to Trigger.dev's durable streams, no API route needed. `renderVisualization` tool parts in the message stream are rendered with json-render's `<Renderer>` and the shadcn component registry (`src/lib/registry.tsx`).
+- `describeTable`: Returns column names/types for allowed tables (`polymarket.markets`, `polymarket.trades`) using bound `Identifier` params (no SQL interpolation).
+- `runQuery`: Executes read-only SQL only (`SELECT`/`WITH`/`DESCRIBE`/`EXPLAIN`/`EXISTS`), enforces allowed-table scope, sets `readonly=2`, caps results at 1,000 rows, and applies a 30s timeout.
+- `filterColumnsForVisualization`: Drops irrelevant columns (never rows) before rendering, based on prompt relevance plus optional column metadata.
+- `renderVisualization`: Accepts a json-render spec and validates it against the shared catalog. If invalid, errors are returned so the model can correct and retry.
+
+Important contract for `renderVisualization`:
+
+- Pass `spec` as a structured object payload: `{ root, elements }`.
+- Do not pass a JSON string (`JSON.stringify(...)` is rejected).
+
+The shared catalog in `src/lib/catalog.ts` defines the model-allowed components (`Card`, `Grid`, `Table`, `Badge`, plus custom `BarChart`, `LineChart`, `AreaChart`, `PieChart`, `Stat`, and `PointMap`).
+
+The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) with [`useTriggerChatTransport`](https://trigger.dev/docs/ai-chat/frontend). The browser streams directly from Trigger.dev durable chat sessions (no custom API route required).
 
 ## Setup
 
-1. Create a project in the [Trigger.dev dashboard](https://cloud.trigger.dev) and copy its project ref and a dev secret key (API keys page).
+1. Create a project in the [Trigger.dev dashboard](https://cloud.trigger.dev) and copy:
+   - project ref
+   - dev secret key
 
-2. Configure the environment:
+2. Configure local environment:
 
    ```sh
    cp .env.example .env
-   # paste your project ref and secret key into .env
+   # paste TRIGGER_PROJECT_REF and TRIGGER_SECRET_KEY into .env
    ```
 
-3. In the dashboard, add these environment variables (Environment Variables page) for the Dev environment (and Prod if you deploy):
+3. In Trigger.dev dashboard environment variables (Dev, and Prod if deploying), set:
 
-   - `CLICKHOUSE_URL` — your ClickHouse HTTPS endpoint with credentials embedded:
+   - `CLICKHOUSE_URL`: ClickHouse HTTPS URL with credentials, for example:
      `https://default:YOUR_PASSWORD@YOUR_SERVICE.clickhouse.cloud:8443`
-   - `NIM_API_KEY` — your NVIDIA NIM API key from NVIDIA Build
-   - `NIM_MODEL` — optional model name, defaulting to `meta/llama-3.3-70b-instruct`
+   - `NIM_API_KEY`: NVIDIA NIM API key
+   - `NIM_MODEL` (optional): defaults to `nvidia/nemotron-3-super-120b-a12b`
 
-   The agent uses NIM through the AI SDK's OpenAI-compatible provider. It returns a normal streamed chat response with tool calls; it does not need to force the whole response to JSON. The `runQuery` tool returns ClickHouse rows as JSON, and `renderVisualization` accepts a structured JSON spec through tool-calling.
-
-4. Install and run both processes (two terminals):
+4. Install and run in two terminals:
 
    ```sh
    pnpm install
-   pnpm dev:trigger   # the agent
-   pnpm dev           # the Next.js app
+   pnpm dev:trigger
+   pnpm dev
    ```
 
-5. Open [http://localhost:3000](http://localhost:3000) and chat with your data.
+5. Open [http://localhost:3000](http://localhost:3000).
 
 ## Try asking
 
-- "What data do I have?"
-- "Show the top 5 busiest pickup days as a bar chart"
-- "How do trip counts and average fares trend by month?"
-- "Break down trips by payment type"
-- "Show the top 100 pickup locations on a map, sized by trip count"
+- "Show me the top 5 largest trades over $10k on sports markets."
+- "Show me how the probability of Trump winning evolved over time."
+- "Show the top markets by April trade volume as a bar chart."
+- "Compare daily trade counts vs daily USD volume in April 2026."
 
-If your database is empty, load one of the [ClickHouse example datasets](https://clickhouse.com/docs/getting-started/example-datasets) (e.g. NYC Taxi) from the ClickHouse Cloud SQL console first.
+## Data scope notes
+
+- Only `polymarket.markets` and `polymarket.trades` are queryable.
+- `polymarket.trades` currently covers April 2026 only.
+- If you ask for out-of-scope periods/fields, the agent should say so explicitly.
 
 ## Deploy
+
+Deploy the agent task:
 
 ```sh
 pnpm deploy:trigger
 ```
 
-Make sure `CLICKHOUSE_URL`, `NIM_API_KEY` and any desired `NIM_MODEL` override are set for the Prod environment in the dashboard, and deploy the Next.js app anywhere with `TRIGGER_SECRET_KEY` (prod) set.
+For production, set dashboard env vars (`CLICKHOUSE_URL`, `NIM_API_KEY`, optional `NIM_MODEL`) and deploy the Next.js app with `TRIGGER_SECRET_KEY`.
+
+If using self-hosted Trigger.dev (not `cloud.trigger.dev`), also set:
+
+- server-side: `TRIGGER_API_URL`
+- browser-side: `NEXT_PUBLIC_TRIGGER_API_URL`

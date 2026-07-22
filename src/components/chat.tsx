@@ -14,7 +14,7 @@ import { Visualization } from "@/components/visualization";
 import type { clickhouseAgent } from "@/trigger/clickhouse-agent";
 
 const SUGGESTIONS = [
-  "What data do I have?",
+  "What percentage of total market volume is concentrated in top-tier political or macro-economic events compared to niche markets?",
   "Show me the top 5 largest trades over $10k on sports markets.",
   "Show me how the probability of Trump winning evolved over time.",
 ];
