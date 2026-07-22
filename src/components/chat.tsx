@@ -3,18 +3,19 @@
 import { useChat } from "@ai-sdk/react";
 import { useTriggerChatTransport } from "@trigger.dev/sdk/chat/react";
 import type { UIMessage } from "ai";
-import { ArrowUp, Database, Loader2, Square } from "lucide-react";
+import { ArrowUp, Loader2, Square } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { mintChatAccessToken, startChatSession } from "@/app/actions";
 import { normalizeSpec } from "@/lib/catalog";
+import { POLYMARKET_LOGO_DATA_URI } from "@/lib/polymarket-logo";
 import { Visualization } from "@/components/visualization";
 import type { clickhouseAgent } from "@/trigger/clickhouse-agent";
 
 const SUGGESTIONS = [
   "What data do I have?",
-  "Show me the top 5 largest trades over $10k on sports markets this week.",
+  "Show me the top 5 largest trades over $10k on sports markets.",
   "Show me how the probability of Trump winning evolved over time.",
 ];
 
@@ -56,28 +57,29 @@ export function Chat() {
   }
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-3xl flex-col">
-      <header className="flex items-center gap-2 border-b px-4 py-3">
-        <Database className="size-4 text-muted-foreground" />
-        <h1 className="text-sm font-semibold">ClickHouse chat agent</h1>
+    <div className="mx-auto flex h-dvh w-full max-w-4xl flex-col bg-gradient-to-b from-sky-50 via-white to-emerald-50">
+      <header className="flex items-center gap-3 border-b border-sky-200/80 bg-white/90 px-4 py-3 backdrop-blur">
+        <img
+          src={POLYMARKET_LOGO_DATA_URI}
+          alt="Polymarket"
+          className="h-7 w-7 rounded-md border border-sky-100 bg-white p-1"
+        />
+        <h1 className="text-sm font-semibold text-slate-900">Polymarket data chat</h1>
         <button
           type="button"
           onClick={() => setShowDebug((v) => !v)}
-          className="ml-auto rounded-full border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          className="ml-auto rounded-full border border-sky-200 bg-white px-2 py-1 text-[11px] text-slate-600 transition-colors hover:bg-sky-50 hover:text-slate-900"
           aria-pressed={showDebug}
         >
           {showDebug ? "Hide debug" : "Show debug"}
         </button>
-        <span className="text-xs text-muted-foreground">
-          Charts &amp; tables, not walls of text
-        </span>
       </header>
 
-      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-secondary">
+      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-6 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-sky-200">
         {messages.length === 0 && (
           <div className="mt-16 space-y-4 text-center">
-            <p className="text-sm text-muted-foreground">
-              Ask about the data in your ClickHouse database.
+            <p className="text-sm text-slate-600">
+              What do you want to know about Polymarket data?
             </p>
             <div className="mx-auto flex max-w-md flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
@@ -85,7 +87,7 @@ export function Chat() {
                   key={s}
                   type="button"
                   onClick={() => submit(s)}
-                  className="rounded-full border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                  className="rounded-full border border-sky-200 bg-white px-3 py-1.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-sky-50 hover:text-slate-900"
                 >
                   {s}
                 </button>
@@ -98,9 +100,9 @@ export function Chat() {
           <Message key={message.id} message={message} showDebug={showDebug} />
         ))}
 
-        {status === "submitted" && (
+        {busy && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" /> Thinking…
+            <Loader2 className="size-3.5 animate-spin" /> Working…
           </div>
         )}
       </div>
@@ -110,20 +112,20 @@ export function Chat() {
           e.preventDefault();
           submit(input);
         }}
-        className="border-t px-4 py-3"
+        className="border-t border-sky-200/80 bg-white/90 px-4 py-3 backdrop-blur"
       >
-        <div className="flex items-center gap-2 rounded-xl border bg-card px-3 py-2 focus-within:ring-2 focus-within:ring-ring/50">
+        <div className="flex items-center gap-2 rounded-xl border border-sky-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-sky-300/60">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about your data…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            placeholder="What do you want about Polymarket data?"
+            className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
           />
           {busy ? (
             <button
               type="button"
               onClick={() => stop()}
-              className="rounded-lg bg-secondary p-2 text-secondary-foreground transition-colors hover:bg-secondary/80"
+              className="rounded-lg bg-slate-100 p-2 text-slate-700 transition-colors hover:bg-slate-200"
               aria-label="Stop"
             >
               <Square className="size-3.5" />
@@ -132,7 +134,7 @@ export function Chat() {
             <button
               type="submit"
               disabled={!input.trim()}
-              className="rounded-lg bg-primary p-2 text-primary-foreground transition-colors disabled:opacity-40"
+              className="rounded-lg bg-sky-600 p-2 text-white transition-colors hover:bg-sky-500 disabled:opacity-40"
               aria-label="Send"
             >
               <ArrowUp className="size-3.5" />
@@ -181,63 +183,28 @@ function MessagePart({ part }: { part: UIMessage["parts"][number] }) {
     const output = part.output as { ok?: boolean } | undefined;
     const spec = part.state === "input-streaming" ? null : normalizeSpec(input?.spec);
 
-    // Wait for the full spec before rendering; if validation failed the
-    // agent fixes the spec and calls the tool again.
-    if (!spec) {
-      return <ToolStatus label="Building visualization…" spinning />;
-    }
-    if (output && output.ok === false) {
-      return <ToolStatus label="Refining visualization…" spinning />;
+    // Only render completed visualizations in the main transcript.
+    // In-progress tool activity is shown via the global Working indicator
+    // and the optional debug timeline.
+    if (!spec || (output && output.ok === false)) {
+      return null;
     }
     return <Visualization spec={spec} />;
   }
 
   if (part.type === "tool-listTables") {
-    return <ToolStatus label="Listing tables" spinning={part.state !== "output-available"} />;
+    return null;
   }
 
   if (part.type === "tool-describeTable") {
-    const input = part.input as { table?: string } | undefined;
-    return (
-      <ToolStatus
-        label={`Reading schema${input?.table ? ` of ${input.table}` : ""}`}
-        spinning={part.state !== "output-available"}
-      />
-    );
+    return null;
   }
 
   if (part.type === "tool-runQuery") {
-    const input = part.input as { query?: string } | undefined;
-    return (
-      <details className="group my-1">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground">
-          {part.state !== "output-available" ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <Database className="size-3" />
-          )}
-          Ran a query
-          <span className="opacity-60 group-open:hidden">— click to expand</span>
-        </summary>
-        {input?.query && (
-          <pre className="mt-2 overflow-x-auto rounded-lg bg-muted p-3 text-xs scrollbar-thin scrollbar-track-transparent scrollbar-thumb-secondary">
-            {input.query}
-          </pre>
-        )}
-      </details>
-    );
+    return null;
   }
 
   return null;
-}
-
-function ToolStatus({ label, spinning }: { label: string; spinning?: boolean }) {
-  return (
-    <div className="my-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-      {spinning ? <Loader2 className="size-3 animate-spin" /> : <Database className="size-3" />}
-      {label}
-    </div>
-  );
 }
 
 function getToolTimeline(message: UIMessage): Array<{
