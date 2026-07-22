@@ -174,6 +174,23 @@ function extractTableReferences(sql: string): string[] {
   return [...refs];
 }
 
+function extractCteNames(sql: string): Set<string> {
+  const cleaned = stripSqlCommentsAndStrings(sql).toLowerCase();
+  const ctes = new Set<string>();
+  const pattern = /\bwith\s+([a-z_][\w]*)\s+as\s*\(|,\s*([a-z_][\w]*)\s+as\s*\(/gi;
+  let match: RegExpExecArray | null = pattern.exec(cleaned);
+
+  while (match) {
+    const cteName = match[1] ?? match[2];
+    if (cteName) {
+      ctes.add(cteName);
+    }
+    match = pattern.exec(cleaned);
+  }
+
+  return ctes;
+}
+
 // ============================================================================
 // Tools
 // ============================================================================
@@ -310,7 +327,10 @@ const runQuery = tool({
       };
     }
 
-    const referencedTables = extractTableReferences(query);
+    const cteNames = extractCteNames(query);
+    const referencedTables = extractTableReferences(query).filter(
+      (tableRef) => !cteNames.has(tableRef)
+    );
     for (const tableRef of referencedTables) {
       const resolved = resolveScopedTable(tableRef);
       if (!resolved.ok) {
