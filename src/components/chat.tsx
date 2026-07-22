@@ -13,10 +13,9 @@ import { Visualization } from "@/components/visualization";
 import type { clickhouseAgent } from "@/trigger/clickhouse-agent";
 
 const SUGGESTIONS = [
-  "Give me a dashboard of the taxi data: daily trip volume over time, demand by hour of day, and revenue share by payment type",
-  "Where do trips start and end? Show pickup and dropoff hotspots on two maps, sized by trip count",
   "What data do I have?",
-  "Break down trips by payment type",
+  "Show me the top 5 largest trades over $10k on sports markets this week.",
+  "Show me how the probability of Trump winning evolved over time.",
 ];
 
 const DEBUG_DEFAULT_VISIBLE = ["1", "true", "on"].includes(

@@ -5,6 +5,7 @@ import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { createProviderRegistry, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { catalogPromptSection, normalizeSpec, validateSpec } from "../lib/catalog";
+import { polymarketDataContext } from "../lib/polymarket-context";
 
 //const DEFAULT_NIM_MODEL = "moonshotai/kimi-k2.6";
 //const DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct";
@@ -114,75 +115,76 @@ function capOutput(rows: unknown[]): { rows: unknown[]; truncated: boolean } {
   return { rows: out, truncated: out.length < rows.length };
 }
 
+const POLYMARKET_DATABASE = "polymarket";
+const ALLOWED_TABLES = new Set(["polymarket.markets", "polymarket.trades"]);
+
+function resolveScopedTable(rawTable: string):
+  | { ok: true; database: string; name: string; qualified: string }
+  | { ok: false; error: string } {
+  const cleaned = rawTable.trim().toLowerCase();
+  if (!cleaned) {
+    return {
+      ok: false,
+      error:
+        "Table name is required. Allowed tables are polymarket.markets and polymarket.trades.",
+    };
+  }
+
+  if (cleaned.includes(".")) {
+    const [database, name] = cleaned.split(".", 2);
+    const qualified = `${database}.${name}`;
+    if (!ALLOWED_TABLES.has(qualified)) {
+      return {
+        ok: false,
+        error: `Only polymarket.markets and polymarket.trades are allowed. Rejected table: ${qualified}`,
+      };
+    }
+    return { ok: true, database, name, qualified };
+  }
+
+  const qualified = `${POLYMARKET_DATABASE}.${cleaned}`;
+  if (!ALLOWED_TABLES.has(qualified)) {
+    return {
+      ok: false,
+      error: `Only polymarket.markets and polymarket.trades are allowed. Rejected table: ${cleaned}`,
+    };
+  }
+
+  return { ok: true, database: POLYMARKET_DATABASE, name: cleaned, qualified };
+}
+
+function stripSqlCommentsAndStrings(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n\r]*/g, " ")
+    .replace(/'([^'\\]|\\.)*'/g, " ");
+}
+
+function extractTableReferences(sql: string): string[] {
+  const cleaned = stripSqlCommentsAndStrings(sql).toLowerCase();
+  const refs = new Set<string>();
+  const pattern = /\b(?:from|join|describe\s+table|exists\s+table)\s+([a-z_][\w]*(?:\.[a-z_][\w]*)?)/gi;
+  let match: RegExpExecArray | null = pattern.exec(cleaned);
+
+  while (match) {
+    refs.add(match[1]);
+    match = pattern.exec(cleaned);
+  }
+
+  return [...refs];
+}
+
 // ============================================================================
 // Tools
 // ============================================================================
 
-const listTables = tool({
-  description:
-    "List the tables in the ClickHouse database, with their engine and row counts. Use this first to see what data is available.",
-  inputSchema: z.object({}),
-  execute: async () => {
-    const startedAt = Date.now();
-    logDebug("tool-start", { tool: "listTables", input: "{}" });
-
-    try {
-      const result = await getClickHouse().query({
-        query: `
-          SELECT database, name, engine, total_rows, formatReadableSize(total_bytes) AS size
-          FROM system.tables
-          WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
-          ORDER BY database, name
-        `,
-        format: "JSONEachRow",
-      });
-      const tables = await result.json();
-      const durationMs = Date.now() - startedAt;
-      const outputPreview = summarizeJson({ rowCount: tables.length });
-      logDebug("tool-success", {
-        tool: "listTables",
-        durationMs,
-        outputSummary: outputPreview.summary,
-        outputSummaryTruncated: outputPreview.truncated,
-      });
-
-      return {
-        tables,
-        debug: {
-          tool: "listTables",
-          status: "succeeded",
-          durationMs,
-          outputSummary: `Returned ${tables.length} table rows`,
-        } satisfies DebugTrace,
-      };
-    } catch (error) {
-      const durationMs = Date.now() - startedAt;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logDebugError("tool-error", {
-        tool: "listTables",
-        durationMs,
-        error: errorMessage,
-      });
-      return {
-        error: errorMessage,
-        debug: {
-          tool: "listTables",
-          status: "failed",
-          durationMs,
-          error: errorMessage,
-        } satisfies DebugTrace,
-      };
-    }
-  },
-});
-
 const describeTable = tool({
   description:
-    "Get the schema (column names and types) of a table. Use this before writing a query against a table.",
+    "Get the schema (column names and types) of an allowed Polymarket table. Allowed tables are polymarket.markets and polymarket.trades.",
   inputSchema: z.object({
     table: z
       .string()
-      .describe("The table name, optionally qualified with a database, e.g. 'default.trips'"),
+      .describe("Table name: polymarket.markets or polymarket.trades. Unqualified names markets/trades are accepted."),
   }),
   execute: async ({ table }) => {
     const startedAt = Date.now();
@@ -192,16 +194,33 @@ const describeTable = tool({
       input: { table: tablePreview.text, truncated: tablePreview.truncated },
     });
 
-    // Identifier params — the client binds them safely, no string interpolation.
-    // A qualified name must bind as two identifiers; one param would escape
-    // the whole string as a single (nonexistent) table name.
+    const scopedTable = resolveScopedTable(table);
+    if (!scopedTable.ok) {
+      const durationMs = Date.now() - startedAt;
+      logDebug("tool-success", {
+        tool: "describeTable",
+        durationMs,
+        table: tablePreview.text,
+        tableTruncated: tablePreview.truncated,
+        scopeRejected: true,
+      });
+      return {
+        error: scopedTable.error,
+        debug: {
+          tool: "describeTable",
+          status: "failed",
+          durationMs,
+          inputPreview: tablePreview.text,
+          truncated: tablePreview.truncated,
+          error: scopedTable.error,
+        } satisfies DebugTrace,
+      };
+    }
+
     try {
-      const [database, name] = table.includes(".") ? table.split(".", 2) : [undefined, table];
       const result = await getClickHouse().query({
-        query: database
-          ? "DESCRIBE TABLE {database: Identifier}.{name: Identifier}"
-          : "DESCRIBE TABLE {name: Identifier}",
-        query_params: { database, name },
+        query: "DESCRIBE TABLE {database: Identifier}.{name: Identifier}",
+        query_params: { database: scopedTable.database, name: scopedTable.name },
         format: "JSONEachRow",
       });
       const columns = await result.json();
@@ -250,11 +269,11 @@ const describeTable = tool({
   },
 });
 
-const READ_ONLY_STATEMENTS = /^\s*(select|with|show|describe|desc|explain|exists)\b/i;
+const READ_ONLY_STATEMENTS = /^\s*(select|with|describe|desc|explain|exists)\b/i;
 
 const runQuery = tool({
   description:
-    "Run a read-only SQL query against ClickHouse and get the results as JSON rows. " +
+    "Run a read-only SQL query against ClickHouse for polymarket.markets and polymarket.trades only. " +
     "Only SELECT-style statements are allowed. Always include a LIMIT (at most 100 rows) " +
     "unless the query is an aggregation.",
   inputSchema: z.object({
@@ -278,7 +297,7 @@ const runQuery = tool({
       });
       return {
         error:
-          "Only read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
+          "Only read-only statements (SELECT, WITH, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
         debug: {
           tool: "runQuery",
           status: "failed",
@@ -286,9 +305,36 @@ const runQuery = tool({
           inputPreview: queryPreview.text,
           truncated: queryPreview.truncated,
           error:
-            "Only read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
+            "Only read-only statements (SELECT, WITH, DESCRIBE, EXPLAIN, EXISTS) are allowed.",
         } satisfies DebugTrace,
       };
+    }
+
+    const referencedTables = extractTableReferences(query);
+    for (const tableRef of referencedTables) {
+      const resolved = resolveScopedTable(tableRef);
+      if (!resolved.ok) {
+        const durationMs = Date.now() - startedAt;
+        logDebug("tool-success", {
+          tool: "runQuery",
+          durationMs,
+          queryPreview: queryPreview.text,
+          queryTruncated: queryPreview.truncated,
+          scopeRejected: true,
+          tableRef,
+        });
+        return {
+          error: resolved.error,
+          debug: {
+            tool: "runQuery",
+            status: "failed",
+            durationMs,
+            inputPreview: queryPreview.text,
+            truncated: queryPreview.truncated,
+            error: resolved.error,
+          } satisfies DebugTrace,
+        };
+      }
     }
 
     try {
@@ -353,6 +399,72 @@ const runQuery = tool({
           inputPreview: queryPreview.text,
           truncated: queryPreview.truncated || errorPreview.truncated,
           error: errorPreview.text,
+        } satisfies DebugTrace,
+      };
+    }
+  },
+});
+
+const checkTradesCoverage = tool({
+  description:
+    "Return the loaded trade-time coverage and row count for polymarket.trades. Use this when a result might be empty due to date-range limits.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    const startedAt = Date.now();
+    logDebug("tool-start", { tool: "checkTradesCoverage", input: "{}" });
+
+    try {
+      const result = await getClickHouse().query({
+        query: `
+          SELECT
+            min(trade_time) AS earliest,
+            max(trade_time) AS latest,
+            count() AS row_count
+          FROM polymarket.trades
+        `,
+        format: "JSONEachRow",
+        clickhouse_settings: {
+          readonly: "2",
+          max_execution_time: 15,
+        },
+      });
+      const rows = (await result.json()) as Array<{
+        earliest: string | null;
+        latest: string | null;
+        row_count: number;
+      }>;
+      const coverage = rows[0] ?? { earliest: null, latest: null, row_count: 0 };
+      const durationMs = Date.now() - startedAt;
+      logDebug("tool-success", {
+        tool: "checkTradesCoverage",
+        durationMs,
+        coverage,
+      });
+
+      return {
+        coverage,
+        debug: {
+          tool: "checkTradesCoverage",
+          status: "succeeded",
+          durationMs,
+          outputSummary: `earliest=${coverage.earliest ?? "null"}, latest=${coverage.latest ?? "null"}, rows=${coverage.row_count}`,
+        } satisfies DebugTrace,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logDebugError("tool-error", {
+        tool: "checkTradesCoverage",
+        durationMs,
+        error: errorMessage,
+      });
+      return {
+        error: errorMessage,
+        debug: {
+          tool: "checkTradesCoverage",
+          status: "failed",
+          durationMs,
+          error: errorMessage,
         } satisfies DebugTrace,
       };
     }
@@ -466,7 +578,7 @@ const renderVisualization = tool({
   },
 });
 
-const tools = { listTables, describeTable, runQuery, renderVisualization };
+const tools = { describeTable, runQuery, checkTradesCoverage, renderVisualization };
 
 // ============================================================================
 // The chat agent
@@ -482,14 +594,25 @@ const systemPrompt = prompts.define({
   model: `nim:${getNimModelName()}`,
   variables: z.object({
     componentReference: z.string(),
+    dataReference: z.string(),
   }),
-  content: `You are a ClickHouse data analyst. You answer questions about the data in the connected ClickHouse database by running SQL queries.
+  content: `You are a Polymarket data analyst for a ClickHouse backend.
+You can only use these two tables:
+- polymarket.markets
+- polymarket.trades
 
 Guidelines:
-- If you don't know what data exists yet, call listTables first, then describeTable before querying a table.
+- Never query or describe any other table. If the user asks for other tables, explain that only polymarket.markets and polymarket.trades are in scope.
+- Use describeTable when schema details are needed before writing SQL.
+- Use checkTradesCoverage when results are unexpectedly empty or when date-range coverage is unclear.
 - Write ClickHouse SQL (not Postgres/MySQL dialect). Prefer aggregations over fetching raw rows.
 - Always LIMIT raw-row queries to 100 rows or fewer.
 - If a query fails, read the error, fix the SQL, and retry.
+- If a question needs data outside the loaded scope (months beyond April 2026, raw on-chain fee fields, per-user rollups, or precomputed YES-normalized views), say this clearly and do not fabricate an answer.
+
+## Polymarket data reference
+
+{{dataReference}}
 
 Presenting results:
 - Whenever the answer contains tabular data, a trend, a comparison or a headline number, call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
@@ -518,6 +641,7 @@ export const clickhouseAgent = chat.agent({
     // observability (tokens, cost, latency) show up in the dashboard.
     const resolved = await systemPrompt.resolve({
       componentReference: catalogPromptSection(),
+      dataReference: polymarketDataContext(),
     });
     chat.prompt.set(resolved);
   },
@@ -553,7 +677,7 @@ export const clickhouseAgent = chat.agent({
       ...chat.toStreamTextOptions({ registry }),
       messages,
       tools,
-      stopWhen: stepCountIs(15),
+      stopWhen: stepCountIs(25),
       abortSignal: signal,
       onFinish: ({ finishReason, usage, totalUsage }) => {
         logDebug("run-finish", {
