@@ -51,6 +51,7 @@ The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/d
    ```sh
    pnpm install
    pnpm dev:trigger
+   # pnpm deploy:trigger  ### to deploy on trigger.dev
    pnpm dev
    ```
 
@@ -69,17 +70,6 @@ The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/d
 - `polymarket.trades` currently covers April 2026 only.
 - If you ask for out-of-scope periods/fields, the agent should say so explicitly.
 
-## Deploy
+## Template used
 
-Deploy the agent task:
-
-```sh
-pnpm deploy:trigger
-```
-
-For production, set dashboard env vars (`CLICKHOUSE_URL`, `NIM_API_KEY`, optional `NIM_MODEL`) and deploy the Next.js app with `TRIGGER_SECRET_KEY`.
-
-If using self-hosted Trigger.dev (not `cloud.trigger.dev`), also set:
-
-- server-side: `TRIGGER_API_URL`
-- browser-side: `NEXT_PUBLIC_TRIGGER_API_URL`
+https://github.com/triggerdotdev/examples/tree/main/clickhouse-chat-agent
