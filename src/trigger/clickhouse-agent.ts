@@ -850,7 +850,7 @@ Presenting results:
 - Then call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
 - Compose visualizations inside a Card with a title; put multiple related views in one spec (e.g. a Stat row above a chart).
 - Keep chart data to a reasonable number of points (aggregate in SQL first) and pre-format display values (round numbers, currency symbols) in the props.
-- After rendering, add at most a one-or-two-sentence takeaway in text without exact values. Never repeat data.
+- After rendering you may add one-two sentences, if there is some important additional information. Never repeat data.
 
 ## renderVisualization spec reference
 
