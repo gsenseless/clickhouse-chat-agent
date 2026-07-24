@@ -2,29 +2,34 @@
 
 A [Trigger.dev chat agent](https://trigger.dev/docs/ai-chat/overview) that answers Polymarket questions by writing and running SQL against [ClickHouse Cloud](https://clickhouse.com/cloud), then returning **interactive charts, tables, and stat cards** instead of long text dumps.
 
-The agent decides when visualization beats prose by calling `renderVisualization` with a [json-render](https://json-render.dev) spec. The Next.js UI renders that spec live with [shadcn/ui](https://ui.shadcn.com) and [shadcn charts](https://ui.shadcn.com/charts) (Recharts).
 
 ## How it works
 
 The agent in `src/trigger/clickhouse-agent.ts` is a single `chat.agent()` task. Trigger.dev handles sessions, turn orchestration, streaming, and resumability.
 
-Its system prompt is a versioned [AI Prompt](https://trigger.dev/docs/ai/prompts) (`prompts.define()` + `chat.prompt.set()`), so you can tune guidance/model settings in the Trigger.dev dashboard without redeploying.
+
 
 It exposes four tools:
 
-- `describeTable`: Returns column names/types for allowed tables (`polymarket.markets`, `polymarket.trades`) using bound `Identifier` params (no SQL interpolation).
-- `runQuery`: Executes read-only SQL only (`SELECT`/`WITH`/`DESCRIBE`/`EXPLAIN`/`EXISTS`), enforces allowed-table scope, sets `readonly=2`, caps results at 1,000 rows, and applies a 30s timeout.
+- `describeTable`: Returns column names/types for allowed tables (`polymarket.markets`, `polymarket.trades`).
+- `runQuery`: Executes read-only SQL.
 - `filterColumnsForVisualization`: Drops irrelevant columns (never rows) before rendering, based on prompt relevance plus optional column metadata.
 - `renderVisualization`: Accepts a json-render spec and validates it against the shared catalog. If invalid, errors are returned so the model can correct and retry.
 
-Important contract for `renderVisualization`:
+## Notes
 
-- Pass `spec` as a structured object payload: `{ root, elements }`.
-- Do not pass a JSON string (`JSON.stringify(...)` is rejected).
+- Domain-specific data context is provided to the agent in [src/lib/polymarket-context.ts](src/lib/polymarket-context.ts).
+- ClickHouse is indexed with tokenizer-based text index:
 
-The shared catalog in `src/lib/catalog.ts` defines the model-allowed components (`Card`, `Grid`, `Table`, `Badge`, plus custom `BarChart`, `LineChart`, `AreaChart`, `PieChart`, `Stat`, and `PointMap`).
+```sql
+ALTER TABLE polymarket.markets
+   ADD INDEX idx_question_text lower(question) TYPE text(tokenizer = splitByNonAlpha);
+```
 
-The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) with [`useTriggerChatTransport`](https://trigger.dev/docs/ai-chat/frontend). The browser streams directly from Trigger.dev durable chat sessions (no custom API route required).
+- The agent works with two tables only (`polymarket.markets`, `polymarket.trades`), and `polymarket.trades` is approximately ~150M rows.
+- The system prompt explains how to query ClickHouse in an index-aware way (token search + `lower(...)` on indexed text columns).
+
+
 
 ## Setup
 
@@ -45,6 +50,8 @@ The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/d
      `https://default:YOUR_PASSWORD@YOUR_SERVICE.clickhouse.cloud:8443`
    - `NIM_API_KEY`: NVIDIA NIM API key
    - `NIM_MODEL` (optional): defaults to `nvidia/nemotron-3-super-120b-a12b`
+
+Model note: It works with weak model. Expect better results with more advanced models.
 
 4. Install and run in two terminals:
 
@@ -68,7 +75,7 @@ The frontend (`src/app`, `src/components`) uses [`useChat`](https://ai-sdk.dev/d
 
 - Only `polymarket.markets` and `polymarket.trades` are queryable.
 - `polymarket.trades` currently covers April 2026 only.
-- If you ask for out-of-scope periods/fields, the agent should say so explicitly.
+
 
 ## Template used
 
