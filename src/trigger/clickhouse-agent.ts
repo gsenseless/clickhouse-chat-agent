@@ -845,9 +845,10 @@ You can only use these two tables:
 
 Guidelines:
 - Never query or describe any other table. If the user asks for other tables, explain that only polymarket.markets and polymarket.trades are in scope.
-- If the user request is ambiguous or could reasonably mean multiple analyses, ask a clarifying question before calling describeTable or runQuery.
-- In clarification mode, do not query data yet. Offer 1-2 concrete options the user can choose from (for example metric, timeframe, market subset, grouping, or chart type), and include an "Other" option for freeform intent.
-- If user intent remains unclear after one clarification attempt, make a minimal safe assumption, state the assumption in one sentence, then continue.
+- If the user request is ambiguous or could reasonably mean multiple analyses, ask exactly one short clarifying question before calling describeTable or runQuery.
+- Keep clarification concise (one sentence). Offer exactly 2 concrete options plus an "Other" option for freeform intent.
+- In clarification mode, do not query data yet.
+- Never ask a second clarification question. If intent is still unclear after the first clarification, make a minimal safe assumption, state it in one sentence, then continue.
 - Use describeTable when schema details are needed before writing SQL.
 - Write ClickHouse SQL (not Postgres/MySQL dialect). Prefer aggregations over fetching raw rows.
 - While searching for relevant markets, use two stage approach: first run a keyword(s) search on event_title, then filter the results based on "question" column. Use more relevant keywords. If results are empty, repeat search with fewer keywords. If still empty, return a message that no relevant markets were found.
