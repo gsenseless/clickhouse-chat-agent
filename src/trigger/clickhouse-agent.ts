@@ -1,4 +1,4 @@
-import { prompts } from "@trigger.dev/sdk";
+import { prompts, retry } from "@trigger.dev/sdk";
 import { chat } from "@trigger.dev/sdk/ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createClient, type ClickHouseClient } from "@clickhouse/client";
@@ -16,6 +16,9 @@ function getNimModelName(): string {
   return process.env.NIM_MODEL?.trim() || DEFAULT_NIM_MODEL;
 }
 
+const LLM_REQUEST_TIMEOUT_MS = parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? "90000", 10);
+const NETWORK_RETRY_ATTEMPTS = parseInt(process.env.NETWORK_RETRY_ATTEMPTS ?? "5", 10);
+
 function getNimProvider() {
   const apiKey = process.env.NIM_API_KEY;
   if (!apiKey) {
@@ -24,12 +27,34 @@ function getNimProvider() {
     );
   }
 
+  const llmFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    return await retry.onThrow(
+      async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
+        try {
+          return await fetch(input as any, { ...(init ?? {}), signal: controller.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      {
+        maxAttempts: NETWORK_RETRY_ATTEMPTS,
+        factor: 1.8,
+        minTimeoutInMs: 500,
+        maxTimeoutInMs: 5000,
+        randomize: true,
+      }
+    );
+  };
+
   return createOpenAICompatible({
     name: "nim",
     baseURL: "https://integrate.api.nvidia.com/v1",
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },
+    fetch: llmFetch,
   });
 }
 
@@ -853,7 +878,7 @@ Presenting results:
 - Then call renderVisualization instead of writing the data out as text: LineChart/AreaChart for time series, BarChart for rankings and comparisons, PieChart for share-of-total, Table for detail rows, a Grid of Stats for KPIs, PointMap for geographic questions when the data has coordinates (aggregate to at most ~200 points in SQL, e.g. round coordinates and count).
 - Compose visualizations inside a Card with a title; put multiple related views in one spec (e.g. a Stat row above a chart).
 - Keep chart data to a reasonable number of points (aggregate in SQL first) and pre-format display values (round numbers, currency symbols) in the props.
-- After rendering you may add one-two sentences, if there is some important additional information. Never repeat data.
+- After rendering you may add short labels description used for visualization.
 
 ## renderVisualization spec reference
 

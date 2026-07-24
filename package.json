@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "dev:trigger": "trigger dev",
-    "deploy:trigger": "trigger deploy"
+    "deploy:trigger": "pnpm dlx trigger.dev@latest deploy"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.62",
@@ -16,7 +16,7 @@
     "@json-render/core": "^0.19.0",
     "@json-render/react": "^0.19.0",
     "@json-render/shadcn": "^0.19.0",
-    "@trigger.dev/sdk": "4.5.6",
+    "@trigger.dev/sdk": "4.5.7",
     "ai": "^6.0.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.564.0",
