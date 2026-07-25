@@ -7,6 +7,15 @@ A [Trigger.dev chat agent](https://trigger.dev/docs/ai-chat/overview) that answe
 
 The agent in `src/trigger/clickhouse-agent.ts` is a single `chat.agent()` task. Trigger.dev handles sessions, turn orchestration, streaming, and resumability.
 
+```mermaid
+flowchart LR
+   prompt["User prompt"] -->|Ask a question| ui["UI app"]
+   ui -->|Stream prompt| agent["Trigger.dev agent"]
+   agent -->|Validated read-only SQL| clickhouse[("ClickHouse")]
+   clickhouse -.->|Query rows| agent
+   agent -.->|Stream text or visualization spec| ui
+   ui -.->|Render answer| prompt
+```
 
 
 It exposes four tools:
