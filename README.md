@@ -41,6 +41,11 @@ ALTER TABLE polymarket.markets
 - The system prompt explains how to query ClickHouse in an index-aware way (token search + `lower(...)` on indexed text columns).
 
 
+## Dataset context
+
+This project uses the [SII-WANGZJ/Polymarket_data dataset](https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data), a large on-chain Polymarket dataset published in analysis-ready parquet formats. In this repo, that source data is loaded into ClickHouse tables (`polymarket.markets`, `polymarket.trades`) so the agent can answer questions with read-only SQL and return charts/tables. 
+`polymarket.trades` currently covers April 2026 only.
+
 
 ## Setup
 
@@ -87,12 +92,6 @@ Model note: It works with weak model. Expect better results with more advanced m
 - "Show me how the probability of Trump winning evolved over time."
 - "Show the top markets by April trade volume as a bar chart."
 - "Compare daily trade counts vs daily USD volume in April 2026."
-
-## Data scope notes
-
-- Only `polymarket.markets` and `polymarket.trades` are queryable.
-- `polymarket.trades` currently covers April 2026 only.
-
 
 ## Template used
 
