@@ -62,9 +62,15 @@ ALTER TABLE polymarket.markets
    - `NIM_API_KEY`: NVIDIA NIM API key
    - `NIM_MODEL` (optional): defaults to `nvidia/nemotron-3-super-120b-a12b`
 
+4. Prepare ClickHouse schema/data. Run against your ClickHouse instance:
+   - `scripts/clickhouse/01_setup_database.sql`
+   - `scripts/clickhouse/02_setup_markets.sql`
+   - `scripts/clickhouse/03_setup_trades.sql`
+   - `scripts/clickhouse/04_setup_indexes.sql`
+
 Model note: It works with weak model. Expect better results with more advanced models.
 
-4. Install and run in two terminals:
+5. Install and run in two terminals:
 
    ```sh
    pnpm install
@@ -73,7 +79,7 @@ Model note: It works with weak model. Expect better results with more advanced m
    pnpm dev
    ```
 
-5. Open [http://localhost:3000](http://localhost:3000).
+6. Open [http://localhost:3000](http://localhost:3000).
 
 ## Try asking
 
